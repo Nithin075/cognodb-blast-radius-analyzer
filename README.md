@@ -1,36 +1,90 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CloudSec Blast-Radius Graph Analyzer
 
-## Getting Started
+A cloud security graph intelligence platform backed by **CognoDB** to simulate compromised asset lateral movement and uncover multi-hop permission escalation paths.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## 1. Why a Graph Database?
+
+In identity and access management (IAM), calculating the **blast radius** of a compromised credential or compute instance requires navigating indirect relationships (Users $\to$ Roles $\to$ Assumed Roles $\to$ Instances $\to$ Target Storage Buckets).
+
+* **The Relational Bottleneck:** In SQL, traversing arbitrary depth or evaluating circular role-assumption chains requires complex recursive Common Table Expressions (`WITH RECURSIVE`) and successive multi-table `JOIN` operations that degrade quickly as connection depth grows.
+* **The Graph Advantage:** In CognoDB (using openCypher), lateral movement is evaluated as an index-free adjacency graph pattern. Multi-hop queries are expressed in clean, declarative patterns like `(v)-[:EXPLOITS]->()-[:RUNS_AS*1..3]->(target)`, executing with minimal latency.
+
+---
+
+## 2. Graph Data Model
+
+```mermaid
+graph LR
+    User([:User]) -->|:ASSIGNED_TO| Role([:Role])
+    Role -->|:CAN_ASSUME| Role
+    Role -->|:HAS_ACCESS| S3Bucket([:S3Bucket])
+    ComputeInstance([:ComputeInstance]) -->|:RUNS_AS| Role
+    Vulnerability([:Vulnerability]) -->|:EXPLOITS| ComputeInstance
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Node Labels & Properties
+* **`User`**: `id`, `name`, `roleType`
+* **`Role`**: `id`, `name`
+* **`ComputeInstance`**: `id`, `name`, `ip`
+* **`S3Bucket`**: `id`, `name`, `classification`
+* **`Vulnerability`**: `cve`, `name`, `severity`
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 3. Key Cypher Queries
 
-## Learn More
+### Multi-Hop Blast-Radius Traversal (Awkward in SQL)
+Finds all downstream entities reachable within 1 to 4 hops starting from a compromised node:
+```cypher
+MATCH (start)
+WHERE start.id = $startId OR start.cve = $startId
+MATCH path = (start)-[r*1..4]-(target)
+WITH collect(path) AS paths
+UNWIND paths AS p
+UNWIND nodes(p) AS n
+UNWIND relationships(p) AS rel
+RETURN collect(DISTINCT n) AS nodes, collect(DISTINCT rel) AS links
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Direct Asset Access Audit
+Finds which roles have admin access to critical data stores:
+```cypher
+MATCH (r:Role)-[acc:HAS_ACCESS]->(b:S3Bucket {classification: 'CRITICAL'})
+RETURN r.name AS RoleName, acc.level AS AccessLevel, b.name AS TargetBucket
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 4. Setup & Running Locally
 
-## Deploy on Vercel
+### Prerequisites
+* Node.js 18+
+* A free instance on [CognoDB Cloud](https://console.cognodb.com/signup)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Installation
+1. Clone the repository:
+   ```bash
+   git clone <YOUR_REPO_URL>
+   cd blast-radius-graph
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Configure environment variables in `.env.local`:
+   ```env
+   COGNODB_URI=bolt+s://<instance-id>.databases.cognodb.cloud
+   COGNODB_USER=cognodb
+   COGNODB_PASSWORD=your_instance_password
+   ```
+4. Seed the database:
+   ```bash
+   npm run seed
+   ```
+5. Run the development server:
+   ```bash
+   npm run dev
+   ```
+6. Open [http://localhost:3000](http://localhost:3000).
